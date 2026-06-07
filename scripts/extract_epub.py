@@ -82,6 +82,33 @@ class TextExtractor(HTMLParser):
         return value.strip()
 
 
+class HeadingExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.current = None
+        self.values = {"title": [], "h1": [], "h2": []}
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in self.values:
+            self.current = tag
+
+    def handle_endtag(self, tag):
+        if self.current == tag.lower():
+            self.current = None
+
+    def handle_data(self, data):
+        if self.current:
+            self.values[self.current].append(data)
+
+    def title(self):
+        for key in ("title", "h1", "h2"):
+            value = clean_text(" ".join(self.values[key]))
+            if value:
+                return value
+        return None
+
+
 def clean_text(text):
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"-\n(?=\w)", "", text)
@@ -152,17 +179,27 @@ def extract(epub_path):
             parser.feed(chapter_html)
             text = parser.text()
             if text:
-                chapters.append(text)
+                heading_parser = HeadingExtractor()
+                heading_parser.feed(chapter_html)
+                chapters.append(
+                    {
+                        "index": len(chapters),
+                        "title": heading_parser.title() or f"Chapter {len(chapters) + 1}",
+                        "href": member,
+                        "text": text,
+                    }
+                )
 
-        full_text = clean_text("\n\n".join(chapters))
+        full_text = clean_text("\n\n".join(chapter["text"] for chapter in chapters))
         warning = None if full_text else "No readable XHTML text was found in this EPUB."
-        return {"title": title, "author": author, "text": full_text, "warning": warning}
+        return {"title": title, "author": author, "text": full_text, "chapters": chapters, "warning": warning}
 
 
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("Usage: extract_epub.py <book.epub>")
-    print(json.dumps(extract(sys.argv[1]), ensure_ascii=False))
+    payload = json.dumps(extract(sys.argv[1]), ensure_ascii=False).encode("utf-8")
+    sys.stdout.buffer.write(payload)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,11 @@
           </div>
           <div class="controls">
             <select id="voiceSelect" title="Voice"></select>
+            <select id="chapterSelect" title="Chapter" disabled>
+              <option value="">Chapters</option>
+            </select>
+            <button id="cacheButton" disabled>Cache</button>
+            <button id="clearCacheButton" disabled>Clear Cache</button>
             <label class="speed-control" title="Playback speed">
               <span>Speed</span>
               <input id="speedRange" type="range" min="0.70" max="1.50" value="1.00" step="0.05" />

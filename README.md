@@ -8,6 +8,7 @@ A small TypeScript web app for listening to local books with Piper.
 - Shows a local browser library and reader.
 - Sends the current chunk of text to Piper.
 - Extracts and caches clean book text in `cache/`.
+- Lets you rebuild or remove cache for the selected book.
 - Saves generated `.wav` files in `generated/`.
 - Tracks reading/listening progress in `library-progress.json`.
 
@@ -64,6 +65,8 @@ EPUB support uses a small Python stdlib helper, so it does not need extra npm pa
 PDF support uses `pdftotext` when it is available on your machine. It works for PDFs that already contain selectable text. Scanned books need OCR first.
 
 Extracted text is cached by source file size and modified time. If you replace a book file, the cache rebuilds automatically.
+
+Use `Cache` / `Rebuild Cache` in the UI to extract a selected book into `cache/` on demand. Use `Clear Cache` to remove only that selected book's extracted text. Deleting `cache/` is safe; the app can rebuild it from `books/`.
 
 The app automatically uses `.venv` when it exists. Otherwise, it calls Piper through:
 

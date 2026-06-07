@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
@@ -15,6 +15,7 @@ type Book = {
   size: number;
   modified: number;
   progress: number;
+  cache: CacheStatus;
 };
 
 type Job = {
@@ -57,7 +58,24 @@ type CachedBook = {
   title: string;
   author?: string;
   text: string;
+  chapters?: CachedChapter[];
   warning?: string;
+};
+
+type CachedChapter = {
+  index: number;
+  title: string;
+  href?: string;
+  text: string;
+  charStart: number;
+  charEnd: number;
+};
+
+type CacheStatus = {
+  exists: boolean;
+  fresh: boolean;
+  path: string;
+  chapters: number;
 };
 
 for (const dir of [booksDir, voicesDir, generatedDir, staticDir, cacheDir]) {
@@ -120,6 +138,7 @@ function listBooks(): Book[] {
     .map((file) => {
       const stats = statSync(file);
       const id = toBookId(file);
+      const cache = getCacheStatus(file);
       return {
         id,
         title: titleFromFile(file),
@@ -128,8 +147,37 @@ function listBooks(): Book[] {
         size: stats.size,
         modified: Math.floor(stats.mtimeMs / 1000),
         progress: getProgress(id),
+        cache,
       };
     });
+}
+
+function cachePathFor(filePath: string): string {
+  return join(cacheDir, `${safeName(filePath)}.json`);
+}
+
+function getCacheStatus(filePath: string): CacheStatus {
+  const cachePath = cachePathFor(filePath);
+  const relativeCachePath = relative(root, cachePath).split(sep).join("/");
+  if (!existsSync(cachePath)) {
+    return { exists: false, fresh: false, path: relativeCachePath, chapters: 0 };
+  }
+
+  try {
+    const stats = statSync(filePath);
+    const cached = JSON.parse(readFileSync(cachePath, "utf8")) as CachedBook;
+    return {
+      exists: true,
+      fresh:
+        cached.sourcePath === filePath &&
+        cached.sourceSize === stats.size &&
+        cached.sourceModified === Math.floor(stats.mtimeMs),
+      path: relativeCachePath,
+      chapters: cached.chapters?.length ?? 0,
+    };
+  } catch {
+    return { exists: true, fresh: false, path: relativeCachePath, chapters: 0 };
+  }
 }
 
 function titleFromFile(filePath: string): string {
@@ -147,10 +195,10 @@ async function extractText(filePath: string): Promise<{ text: string; warning?: 
   };
 }
 
-async function readOrCreateCachedBook(filePath: string): Promise<CachedBook> {
+async function readOrCreateCachedBook(filePath: string, force = false): Promise<CachedBook> {
   const stats = statSync(filePath);
-  const cachePath = join(cacheDir, `${safeName(filePath)}.json`);
-  if (existsSync(cachePath)) {
+  const cachePath = cachePathFor(filePath);
+  if (!force && existsSync(cachePath)) {
     try {
       const cached = JSON.parse(readFileSync(cachePath, "utf8")) as CachedBook;
       if (
@@ -159,6 +207,7 @@ async function readOrCreateCachedBook(filePath: string): Promise<CachedBook> {
         cached.sourceModified === Math.floor(stats.mtimeMs)
       ) {
         cached.text = cleanText(cached.text);
+        cached.chapters = normalizeChapters(cached.text, cached.chapters);
         return cached;
       }
     } catch {
@@ -174,16 +223,18 @@ async function readOrCreateCachedBook(filePath: string): Promise<CachedBook> {
     title: extracted.title ?? titleFromFile(filePath),
     author: extracted.author,
     text: cleanText(extracted.text),
+    chapters: normalizeChapters(cleanText(extracted.text), extracted.chapters),
     warning: extracted.warning,
   };
   writeFileSync(cachePath, JSON.stringify(cached, null, 2), "utf8");
   return cached;
 }
 
-async function extractFreshBook(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string }> {
+async function extractFreshBook(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string; chapters?: Partial<CachedChapter>[] }> {
   const extension = extname(filePath).toLowerCase();
   if (extension === ".txt" || extension === ".md") {
-    return { text: cleanText(await readFile(filePath, "utf8")), title: titleFromFile(filePath) };
+    const text = cleanText(await readFile(filePath, "utf8"));
+    return { text, title: titleFromFile(filePath), chapters: [{ index: 0, title: titleFromFile(filePath), text }] };
   }
 
   if (extension === ".pdf") {
@@ -228,7 +279,35 @@ async function extractFreshBook(filePath: string): Promise<{ text: string; warni
   return { text: "", warning: `Unsupported file type: ${extension}` };
 }
 
-function runEpubExtractor(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string }> {
+function normalizeChapters(text: string, chapters?: Partial<CachedChapter>[]): CachedChapter[] {
+  if (!chapters?.length) {
+    return text
+      ? [{ index: 0, title: "Full Text", text, charStart: 0, charEnd: text.length }]
+      : [];
+  }
+
+  let cursor = 0;
+  return chapters
+    .map((chapter, index) => {
+      const chapterText = cleanText(chapter.text ?? "");
+      if (!chapterText) return null;
+      const foundAt = text.indexOf(chapterText, cursor);
+      const charStart = foundAt >= 0 ? foundAt : cursor;
+      const charEnd = charStart + chapterText.length;
+      cursor = charEnd;
+      return {
+        index,
+        title: chapter.title || `Chapter ${index + 1}`,
+        href: chapter.href,
+        text: chapterText,
+        charStart,
+        charEnd,
+      };
+    })
+    .filter((chapter): chapter is CachedChapter => chapter !== null);
+}
+
+function runEpubExtractor(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string; chapters?: Partial<CachedChapter>[] }> {
   return new Promise((resolvePromise, reject) => {
     const helperPath = join(scriptsDir, "extract_epub.py");
     const child = spawn(piperPython, [helperPath, filePath], { windowsHide: true });
@@ -250,12 +329,14 @@ function runEpubExtractor(filePath: string): Promise<{ text: string; warning?: s
           title?: string;
           author?: string;
           text?: string;
+          chapters?: Partial<CachedChapter>[];
           warning?: string;
         };
         resolvePromise({
           title: parsed.title,
           author: parsed.author,
           text: cleanText(parsed.text ?? ""),
+          chapters: parsed.chapters,
           warning: parsed.warning,
         });
       } catch (error) {
@@ -476,6 +557,45 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && url.pathname.startsWith("/api/jobs/")) {
       const job = jobs.get(url.pathname.split("/").at(-1) ?? "");
       sendJson(res, job ?? { error: "Job not found" }, job ? 200 : 404);
+      return;
+    }
+
+    const cacheMatch = url.pathname.match(/^\/api\/books\/(.+)\/cache$/);
+    if (cacheMatch) {
+      const bookId = decodeURIComponent(cacheMatch[1]);
+      const filePath = safeBookPath(bookId);
+      if (method === "GET") {
+        sendJson(res, { cache: getCacheStatus(filePath) });
+        return;
+      }
+      if (method === "POST") {
+        const cached = await readOrCreateCachedBook(filePath, true);
+        sendJson(res, {
+          ok: true,
+          cache: getCacheStatus(filePath),
+          title: cached.title,
+          author: cached.author,
+          totalChars: cached.text.length,
+          chapters: cached.chapters?.map(({ index, title, charStart, charEnd }) => ({ index, title, charStart, charEnd })) ?? [],
+          warning: cached.warning,
+        });
+        return;
+      }
+      if (method === "DELETE") {
+        const cachePath = cachePathFor(filePath);
+        if (existsSync(cachePath)) unlinkSync(cachePath);
+        sendJson(res, { ok: true, cache: getCacheStatus(filePath) });
+        return;
+      }
+    }
+
+    const chaptersMatch = url.pathname.match(/^\/api\/books\/(.+)\/chapters$/);
+    if (method === "GET" && chaptersMatch) {
+      const filePath = safeBookPath(decodeURIComponent(chaptersMatch[1]));
+      const cached = await readOrCreateCachedBook(filePath);
+      sendJson(res, {
+        chapters: cached.chapters?.map(({ index, title, charStart, charEnd }) => ({ index, title, charStart, charEnd })) ?? [],
+      });
       return;
     }
 

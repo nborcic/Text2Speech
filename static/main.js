@@ -2,6 +2,7 @@ const state = {
   books: [],
   voices: [],
   selectedBook: null,
+  chapters: [],
   offset: 0,
   previousOffsets: [],
 };
@@ -12,6 +13,9 @@ const els = {
   bookTitle: document.querySelector("#bookTitle"),
   bookMeta: document.querySelector("#bookMeta"),
   voiceSelect: document.querySelector("#voiceSelect"),
+  chapterSelect: document.querySelector("#chapterSelect"),
+  cacheButton: document.querySelector("#cacheButton"),
+  clearCacheButton: document.querySelector("#clearCacheButton"),
   speedRange: document.querySelector("#speedRange"),
   speedValue: document.querySelector("#speedValue"),
   listenButton: document.querySelector("#listenButton"),
@@ -72,7 +76,7 @@ function renderBooks() {
     button.className = `book-item ${state.selectedBook?.id === book.id ? "active" : ""}`;
     button.innerHTML = `
       <span class="book-item-title"></span>
-      <span class="book-item-meta">${book.extension.toUpperCase()} - ${formatBytes(book.size)}</span>
+      <span class="book-item-meta">${book.extension.toUpperCase()} - ${formatBytes(book.size)} - ${book.cache?.fresh ? "cached" : "not cached"}</span>
     `;
     button.querySelector(".book-item-title").textContent = book.title;
     button.addEventListener("click", () => selectBook(book));
@@ -83,9 +87,15 @@ function renderBooks() {
 async function selectBook(book, offset = book.progress || 0) {
   state.selectedBook = book;
   state.offset = offset;
+  state.chapters = [];
   state.previousOffsets = [];
   renderBooks();
+  renderChapters();
+  updateCacheButtons(book.cache);
   await loadText(offset);
+  if (book.cache?.fresh) {
+    await loadChapters();
+  }
 }
 
 async function loadText(offset) {
@@ -114,6 +124,56 @@ async function loadText(offset) {
   els.nextChunk.disabled = data.nextOffset >= data.totalChars;
   els.nextChunk.dataset.nextOffset = String(data.nextOffset);
   els.status.textContent = "Idle";
+}
+
+function updateCacheButtons(cache) {
+  const hasBook = Boolean(state.selectedBook);
+  els.cacheButton.disabled = !hasBook;
+  els.clearCacheButton.disabled = !hasBook || !cache?.exists;
+  els.cacheButton.textContent = cache?.fresh ? "Rebuild Cache" : "Cache";
+}
+
+function renderChapters() {
+  els.chapterSelect.innerHTML = '<option value="">Chapters</option>';
+  for (const chapter of state.chapters) {
+    const option = document.createElement("option");
+    option.value = String(chapter.charStart);
+    option.textContent = `${chapter.index + 1}. ${chapter.title}`;
+    els.chapterSelect.append(option);
+  }
+  els.chapterSelect.disabled = state.chapters.length === 0;
+}
+
+async function loadChapters() {
+  if (!state.selectedBook) return;
+  const data = await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/chapters`);
+  state.chapters = data.chapters || [];
+  renderChapters();
+}
+
+async function cacheSelectedBook() {
+  if (!state.selectedBook) return;
+  els.cacheButton.disabled = true;
+  els.status.textContent = "Caching book...";
+  const data = await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/cache`, { method: "POST" });
+  state.selectedBook.cache = data.cache;
+  updateCacheButtons(data.cache);
+  await loadChapters();
+  await loadBooks();
+  els.status.textContent = data.warning || `Cached ${data.totalChars.toLocaleString()} characters`;
+}
+
+async function clearSelectedCache() {
+  if (!state.selectedBook) return;
+  els.clearCacheButton.disabled = true;
+  els.status.textContent = "Removing cache...";
+  const data = await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/cache`, { method: "DELETE" });
+  state.selectedBook.cache = data.cache;
+  state.chapters = [];
+  renderChapters();
+  updateCacheButtons(data.cache);
+  await loadBooks();
+  els.status.textContent = "Cache removed";
 }
 
 async function listen() {
@@ -154,6 +214,13 @@ async function pollJob(jobId) {
 
 els.refreshBooks.addEventListener("click", loadBooks);
 els.listenButton.addEventListener("click", listen);
+els.cacheButton.addEventListener("click", cacheSelectedBook);
+els.clearCacheButton.addEventListener("click", clearSelectedCache);
+els.chapterSelect.addEventListener("change", async () => {
+  if (!els.chapterSelect.value) return;
+  state.previousOffsets.push(state.offset);
+  await loadText(Number(els.chapterSelect.value));
+});
 els.speedRange.addEventListener("input", () => {
   const speed = Number(els.speedRange.value || 1);
   els.speedValue.textContent = `${speed.toFixed(2)}x`;
