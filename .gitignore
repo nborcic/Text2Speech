@@ -5,3 +5,4 @@ generated/*.wav
 generated/*.mp3
 voices/*.onnx
 voices/*.onnx.json
+.venv/

@@ -3,8 +3,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { URL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 type Book = {
   id: string;
@@ -25,7 +26,8 @@ type Job = {
   chars?: number;
 };
 
-const root = resolve(process.env.APP_ROOT ?? process.cwd());
+const sourceDir = dirname(fileURLToPath(import.meta.url));
+const root = resolve(process.env.APP_ROOT ?? join(sourceDir, ".."));
 const booksDir = join(root, "books");
 const voicesDir = join(root, "voices");
 const generatedDir = join(root, "generated");
@@ -34,7 +36,10 @@ const progressPath = join(root, "library-progress.json");
 
 const supportedBookExtensions = new Set([".txt", ".md", ".pdf"]);
 const defaultVoice = process.env.PIPER_VOICE ?? "en_US-lessac-medium";
-const piperPython = process.env.PIPER_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
+const localVenvPython = process.platform === "win32"
+  ? join(root, ".venv", "Scripts", "python.exe")
+  : join(root, ".venv", "bin", "python");
+const piperPython = process.env.PIPER_PYTHON ?? (existsSync(localVenvPython) ? localVenvPython : process.platform === "win32" ? "python" : "python3");
 const maxCharsPerJob = Number(process.env.MAX_CHARS_PER_JOB ?? 12000);
 const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -250,7 +255,7 @@ function runPiper(text: string, voice: string, outputPath: string): Promise<void
   return new Promise((resolvePromise, reject) => {
     const child = spawn(
       piperPython,
-      ["-m", "piper", "--data-dir", voicesDir, "-m", voice, "-f", outputPath, "--", text],
+      ["-m", "piper", "--data-dir", voicesDir, "-m", voice, "-f", outputPath],
       { windowsHide: true }
     );
 
@@ -267,6 +272,7 @@ function runPiper(text: string, voice: string, outputPath: string): Promise<void
       if (code === 0) resolvePromise();
       else reject(new Error((stderr || stdout || `Piper exited with code ${code}`).trim()));
     });
+    child.stdin.end(text);
   });
 }
 

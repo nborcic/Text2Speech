@@ -14,16 +14,17 @@ A small TypeScript web app for listening to local books with Piper.
 
 This version has no Node package dependencies. It runs directly on Node 22.
 
-Install Piper in the Python environment that Node can call:
+Install Piper in a project virtual environment:
 
-```sh
-python -m pip install piper-tts
+```powershell
+python -m venv ".venv"
+& ".\.venv\Scripts\python.exe" -m pip install piper-tts
 ```
 
 Download a voice into `voices/`:
 
-```sh
-python -m piper.download_voices --data-dir voices en_US-lessac-medium
+```powershell
+& ".\.venv\Scripts\python.exe" -m piper.download_voices --data-dir voices en_US-lessac-medium
 ```
 
 Run the app:
@@ -57,7 +58,7 @@ http://127.0.0.1:8080
 
 PDF support uses `pdftotext` when it is available on your machine. It works for PDFs that already contain selectable text. Scanned books need OCR first.
 
-The app calls Piper through:
+The app automatically uses `.venv` when it exists. Otherwise, it calls Piper through:
 
 ```sh
 python -m piper
