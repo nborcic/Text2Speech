@@ -1,0 +1,10 @@
+{
+  "name": "local-tts-library",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types src/server.ts",
+    "start": "node --experimental-strip-types src/server.ts"
+  }
+}

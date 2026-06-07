@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Local TTS Library</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <h1>Local TTS Library</h1>
+          <button id="refreshBooks" class="icon-button" title="Refresh books">↻</button>
+        </div>
+        <div class="hint">Drop `.txt`, `.md`, or text-based `.pdf` files into `books/`.</div>
+        <div id="bookList" class="book-list"></div>
+      </aside>
+
+      <section class="reader">
+        <header class="toolbar">
+          <div>
+            <div id="bookTitle" class="book-title">No book selected</div>
+            <div id="bookMeta" class="book-meta">Choose a book from the library.</div>
+          </div>
+          <div class="controls">
+            <select id="voiceSelect" title="Voice"></select>
+            <button id="listenButton" disabled>Listen</button>
+          </div>
+        </header>
+
+        <div id="notice" class="notice hidden"></div>
+
+        <article id="textView" class="text-view">
+          <p class="empty">Your book text will appear here.</p>
+        </article>
+
+        <footer class="player">
+          <audio id="audioPlayer" controls></audio>
+          <div class="nav-controls">
+            <button id="previousChunk" disabled>Previous</button>
+            <button id="nextChunk" disabled>Next</button>
+          </div>
+          <div id="status" class="status">Idle</div>
+        </footer>
+      </section>
+    </main>
+
+    <script type="module" src="/static/main.js"></script>
+  </body>
+</html>

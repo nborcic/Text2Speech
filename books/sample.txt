@@ -1,0 +1,6 @@
+Local TTS Library
+
+This is a short sample book. Put your own TXT, Markdown, or text-based PDF files into the books folder and refresh the library.
+
+When you press Listen, the app sends a chunk of text to Piper and plays the generated audio file in the browser.
+
