@@ -215,6 +215,34 @@ button:disabled {
   font-size: 13px;
 }
 
+.editor-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--line);
+  background: #f2f7f7;
+}
+
+.editor-panel textarea {
+  width: 100%;
+  min-height: 220px;
+  max-height: 38vh;
+  resize: vertical;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+  color: var(--text);
+  font: 15px/1.55 ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .hidden {
   display: none;
 }

@@ -58,6 +58,7 @@ type CachedBook = {
   title: string;
   author?: string;
   text: string;
+  editedText?: string;
   chapters?: CachedChapter[];
   warning?: string;
 };
@@ -187,8 +188,9 @@ function titleFromFile(filePath: string): string {
 
 async function extractText(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string }> {
   const cached = await readOrCreateCachedBook(filePath);
+  const text = cleanText(cached.editedText ?? cached.text);
   return {
-    text: cached.text,
+    text,
     warning: cached.warning,
     title: cached.title,
     author: cached.author,
@@ -207,7 +209,8 @@ async function readOrCreateCachedBook(filePath: string, force = false): Promise<
         cached.sourceModified === Math.floor(stats.mtimeMs)
       ) {
         cached.text = cleanText(cached.text);
-        cached.chapters = normalizeChapters(cached.text, cached.chapters);
+        if (cached.editedText) cached.editedText = cleanText(cached.editedText);
+        cached.chapters = normalizeChapters(cached.editedText ?? cached.text, cached.chapters);
         return cached;
       }
     } catch {
@@ -305,6 +308,41 @@ function normalizeChapters(text: string, chapters?: Partial<CachedChapter>[]): C
       };
     })
     .filter((chapter): chapter is CachedChapter => chapter !== null);
+}
+
+function saveCachedBook(cached: CachedBook): void {
+  writeFileSync(cachePathFor(cached.sourcePath), JSON.stringify(cached, null, 2), "utf8");
+}
+
+async function updateCachedTextChunk(filePath: string, offset: number, oldText: string, newText: string): Promise<CachedBook> {
+  const cached = await readOrCreateCachedBook(filePath);
+  const baseText = cleanText(cached.editedText ?? cached.text);
+  const safeOffset = Math.max(0, Math.min(offset, baseText.length));
+  const normalizedOld = cleanText(oldText);
+  const normalizedNew = cleanText(newText);
+
+  let start = safeOffset;
+  let end = safeOffset + normalizedOld.length;
+  if (normalizedOld && baseText.slice(start, end) !== normalizedOld) {
+    const foundAt = baseText.indexOf(normalizedOld, Math.max(0, safeOffset - 2000));
+    if (foundAt >= 0) {
+      start = foundAt;
+      end = foundAt + normalizedOld.length;
+    }
+  }
+
+  cached.editedText = cleanText(`${baseText.slice(0, start)}${normalizedNew}${baseText.slice(end)}`);
+  cached.chapters = normalizeChapters(cached.editedText, cached.chapters);
+  saveCachedBook(cached);
+  return cached;
+}
+
+async function resetCachedTextEdits(filePath: string): Promise<CachedBook> {
+  const cached = await readOrCreateCachedBook(filePath);
+  delete cached.editedText;
+  cached.chapters = normalizeChapters(cached.text, cached.chapters);
+  saveCachedBook(cached);
+  return cached;
 }
 
 function runEpubExtractor(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string; chapters?: Partial<CachedChapter>[] }> {
@@ -597,6 +635,35 @@ const server = createServer(async (req, res) => {
         chapters: cached.chapters?.map(({ index, title, charStart, charEnd }) => ({ index, title, charStart, charEnd })) ?? [],
       });
       return;
+    }
+
+    const editsMatch = url.pathname.match(/^\/api\/books\/(.+)\/edits$/);
+    if (editsMatch) {
+      const filePath = safeBookPath(decodeURIComponent(editsMatch[1]));
+      if (method === "POST") {
+        const payload = await readJson(req);
+        const cached = await updateCachedTextChunk(
+          filePath,
+          Number(payload.offset ?? 0),
+          String(payload.oldText ?? ""),
+          String(payload.newText ?? "")
+        );
+        sendJson(res, {
+          ok: true,
+          totalChars: cleanText(cached.editedText ?? cached.text).length,
+          edited: Boolean(cached.editedText),
+        });
+        return;
+      }
+      if (method === "DELETE") {
+        const cached = await resetCachedTextEdits(filePath);
+        sendJson(res, {
+          ok: true,
+          totalChars: cached.text.length,
+          edited: false,
+        });
+        return;
+      }
     }
 
     const bookTextMatch = url.pathname.match(/^\/api\/books\/(.+)\/text$/);

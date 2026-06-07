@@ -4,6 +4,7 @@ const state = {
   selectedBook: null,
   chapters: [],
   offset: 0,
+  currentText: "",
   previousOffsets: [],
 };
 
@@ -16,6 +17,12 @@ const els = {
   chapterSelect: document.querySelector("#chapterSelect"),
   cacheButton: document.querySelector("#cacheButton"),
   clearCacheButton: document.querySelector("#clearCacheButton"),
+  editButton: document.querySelector("#editButton"),
+  editorPanel: document.querySelector("#editorPanel"),
+  editTextArea: document.querySelector("#editTextArea"),
+  saveEditButton: document.querySelector("#saveEditButton"),
+  cancelEditButton: document.querySelector("#cancelEditButton"),
+  resetEditButton: document.querySelector("#resetEditButton"),
   speedRange: document.querySelector("#speedRange"),
   speedValue: document.querySelector("#speedValue"),
   listenButton: document.querySelector("#listenButton"),
@@ -89,6 +96,7 @@ async function selectBook(book, offset = book.progress || 0) {
   state.offset = offset;
   state.chapters = [];
   state.previousOffsets = [];
+  closeEditor();
   renderBooks();
   renderChapters();
   updateCacheButtons(book.cache);
@@ -114,12 +122,14 @@ async function loadText(offset) {
   }
 
   state.offset = data.offset;
+  state.currentText = data.text || "";
   els.bookTitle.textContent = data.title;
   els.bookMeta.textContent = `${Math.min(data.nextOffset, data.totalChars).toLocaleString()} / ${data.totalChars.toLocaleString()} characters`;
   els.textView.textContent = data.text || "No readable text found for this section.";
   els.notice.textContent = data.warning || "";
   els.notice.classList.toggle("hidden", !data.warning);
   els.listenButton.disabled = !data.text;
+  els.editButton.disabled = !data.text;
   els.previousChunk.disabled = state.previousOffsets.length === 0;
   els.nextChunk.disabled = data.nextOffset >= data.totalChars;
   els.nextChunk.dataset.nextOffset = String(data.nextOffset);
@@ -170,10 +180,54 @@ async function clearSelectedCache() {
   const data = await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/cache`, { method: "DELETE" });
   state.selectedBook.cache = data.cache;
   state.chapters = [];
+  state.currentText = "";
   renderChapters();
+  closeEditor();
   updateCacheButtons(data.cache);
   await loadBooks();
   els.status.textContent = "Cache removed";
+}
+
+function openEditor() {
+  if (!state.currentText) return;
+  els.editTextArea.value = state.currentText;
+  els.editorPanel.classList.remove("hidden");
+  els.textView.classList.add("hidden");
+  els.status.textContent = "Editing cached text chunk";
+}
+
+function closeEditor() {
+  els.editorPanel.classList.add("hidden");
+  els.textView.classList.remove("hidden");
+}
+
+async function saveCurrentEdits() {
+  if (!state.selectedBook) return;
+  els.saveEditButton.disabled = true;
+  els.status.textContent = "Saving edits...";
+  await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/edits`, {
+    method: "POST",
+    body: JSON.stringify({
+      offset: state.offset,
+      oldText: state.currentText,
+      newText: els.editTextArea.value,
+    }),
+  });
+  closeEditor();
+  await loadText(state.offset);
+  els.saveEditButton.disabled = false;
+  els.status.textContent = "Edits saved";
+}
+
+async function resetBookEdits() {
+  if (!state.selectedBook) return;
+  els.resetEditButton.disabled = true;
+  els.status.textContent = "Resetting edits...";
+  await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/edits`, { method: "DELETE" });
+  closeEditor();
+  await loadText(state.offset);
+  els.resetEditButton.disabled = false;
+  els.status.textContent = "Book edits reset";
 }
 
 async function listen() {
@@ -216,6 +270,10 @@ els.refreshBooks.addEventListener("click", loadBooks);
 els.listenButton.addEventListener("click", listen);
 els.cacheButton.addEventListener("click", cacheSelectedBook);
 els.clearCacheButton.addEventListener("click", clearSelectedCache);
+els.editButton.addEventListener("click", openEditor);
+els.cancelEditButton.addEventListener("click", closeEditor);
+els.saveEditButton.addEventListener("click", saveCurrentEdits);
+els.resetEditButton.addEventListener("click", resetBookEdits);
 els.chapterSelect.addEventListener("change", async () => {
   if (!els.chapterSelect.value) return;
   state.previousOffsets.push(state.offset);
