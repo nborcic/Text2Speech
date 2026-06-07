@@ -4,9 +4,10 @@ A small TypeScript web app for listening to local books with Piper.
 
 ## What it does
 
-- Scans `books/` for `.txt`, `.md`, and text-based `.pdf` files.
+- Scans `books/` for `.txt`, `.md`, `.epub`, and text-based `.pdf` files.
 - Shows a local browser library and reader.
 - Sends the current chunk of text to Piper.
+- Extracts and caches clean book text in `cache/`.
 - Saves generated `.wav` files in `generated/`.
 - Tracks reading/listening progress in `library-progress.json`.
 
@@ -51,12 +52,18 @@ http://127.0.0.1:8080
 - `books/` - put your books here.
 - `voices/` - Piper `.onnx` and `.onnx.json` voice files.
 - `generated/` - generated audio chunks.
+- `cache/` - extracted book text cache.
 - `static/` - browser UI.
 - `src/` - TypeScript backend.
+- `scripts/` - helper scripts, including EPUB extraction.
 
 ## Notes
 
+EPUB support uses a small Python stdlib helper, so it does not need extra npm packages.
+
 PDF support uses `pdftotext` when it is available on your machine. It works for PDFs that already contain selectable text. Scanned books need OCR first.
+
+Extracted text is cached by source file size and modified time. If you replace a book file, the cache rebuilds automatically.
 
 The app automatically uses `.venv` when it exists. Otherwise, it calls Piper through:
 

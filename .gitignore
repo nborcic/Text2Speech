@@ -6,3 +6,6 @@ generated/*.mp3
 voices/*.onnx
 voices/*.onnx.json
 .venv/
+cache/*.json
+books/
+library-progress.json

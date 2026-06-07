@@ -12,6 +12,8 @@ const els = {
   bookTitle: document.querySelector("#bookTitle"),
   bookMeta: document.querySelector("#bookMeta"),
   voiceSelect: document.querySelector("#voiceSelect"),
+  speedRange: document.querySelector("#speedRange"),
+  speedValue: document.querySelector("#speedValue"),
   listenButton: document.querySelector("#listenButton"),
   textView: document.querySelector("#textView"),
   notice: document.querySelector("#notice"),
@@ -70,7 +72,7 @@ function renderBooks() {
     button.className = `book-item ${state.selectedBook?.id === book.id ? "active" : ""}`;
     button.innerHTML = `
       <span class="book-item-title"></span>
-      <span class="book-item-meta">${book.extension.toUpperCase()} · ${formatBytes(book.size)}</span>
+      <span class="book-item-meta">${book.extension.toUpperCase()} - ${formatBytes(book.size)}</span>
     `;
     button.querySelector(".book-item-title").textContent = book.title;
     button.addEventListener("click", () => selectBook(book));
@@ -91,6 +93,15 @@ async function loadText(offset) {
   els.status.textContent = "Loading text...";
   els.listenButton.disabled = true;
   const data = await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/text?offset=${offset}`);
+
+  if (!data.text && data.totalChars > 0 && offset > 0) {
+    await api(`/api/books/${encodeURIComponent(state.selectedBook.id)}/progress`, {
+      method: "POST",
+      body: JSON.stringify({ offset: 0 }),
+    });
+    await loadText(0);
+    return;
+  }
 
   state.offset = data.offset;
   els.bookTitle.textContent = data.title;
@@ -122,6 +133,7 @@ async function pollJob(jobId) {
 
   if (job.status === "done") {
     els.audioPlayer.src = job.audio;
+    els.audioPlayer.playbackRate = Number(els.speedRange.value || 1);
     els.audioPlayer.play().catch(() => {});
     els.listenButton.disabled = false;
     if (typeof job.nextOffset === "number") {
@@ -142,6 +154,14 @@ async function pollJob(jobId) {
 
 els.refreshBooks.addEventListener("click", loadBooks);
 els.listenButton.addEventListener("click", listen);
+els.speedRange.addEventListener("input", () => {
+  const speed = Number(els.speedRange.value || 1);
+  els.speedValue.textContent = `${speed.toFixed(2)}x`;
+  els.audioPlayer.playbackRate = speed;
+  if (els.audioPlayer.src) {
+    els.status.textContent = `Playback speed ${speed.toFixed(2)}x`;
+  }
+});
 els.nextChunk.addEventListener("click", async () => {
   state.previousOffsets.push(state.offset);
   await loadText(Number(els.nextChunk.dataset.nextOffset || 0));

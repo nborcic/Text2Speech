@@ -32,21 +32,35 @@ const booksDir = join(root, "books");
 const voicesDir = join(root, "voices");
 const generatedDir = join(root, "generated");
 const staticDir = join(root, "static");
+const cacheDir = join(root, "cache");
+const scriptsDir = join(root, "scripts");
 const progressPath = join(root, "library-progress.json");
 
-const supportedBookExtensions = new Set([".txt", ".md", ".pdf"]);
+const supportedBookExtensions = new Set([".txt", ".md", ".pdf", ".epub"]);
 const defaultVoice = process.env.PIPER_VOICE ?? "en_US-lessac-medium";
 const localVenvPython = process.platform === "win32"
   ? join(root, ".venv", "Scripts", "python.exe")
   : join(root, ".venv", "bin", "python");
 const piperPython = process.env.PIPER_PYTHON ?? (existsSync(localVenvPython) ? localVenvPython : process.platform === "win32" ? "python" : "python3");
+const bundledPdfToText = "C:\\tools\\poppler-26.02.0\\Library\\bin\\pdftotext.exe";
+const pdfToTextBin = process.env.PDFTOTEXT_BIN ?? (existsSync(bundledPdfToText) ? bundledPdfToText : "pdftotext");
 const maxCharsPerJob = Number(process.env.MAX_CHARS_PER_JOB ?? 12000);
 const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "127.0.0.1";
 
 const jobs = new Map<string, Job>();
 
-for (const dir of [booksDir, voicesDir, generatedDir, staticDir]) {
+type CachedBook = {
+  sourcePath: string;
+  sourceSize: number;
+  sourceModified: number;
+  title: string;
+  author?: string;
+  text: string;
+  warning?: string;
+};
+
+for (const dir of [booksDir, voicesDir, generatedDir, staticDir, cacheDir]) {
   mkdirSync(dir, { recursive: true });
 }
 
@@ -123,14 +137,57 @@ function titleFromFile(filePath: string): string {
   return fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
 }
 
-async function extractText(filePath: string): Promise<{ text: string; warning?: string }> {
+async function extractText(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string }> {
+  const cached = await readOrCreateCachedBook(filePath);
+  return {
+    text: cached.text,
+    warning: cached.warning,
+    title: cached.title,
+    author: cached.author,
+  };
+}
+
+async function readOrCreateCachedBook(filePath: string): Promise<CachedBook> {
+  const stats = statSync(filePath);
+  const cachePath = join(cacheDir, `${safeName(filePath)}.json`);
+  if (existsSync(cachePath)) {
+    try {
+      const cached = JSON.parse(readFileSync(cachePath, "utf8")) as CachedBook;
+      if (
+        cached.sourcePath === filePath &&
+        cached.sourceSize === stats.size &&
+        cached.sourceModified === Math.floor(stats.mtimeMs)
+      ) {
+        cached.text = cleanText(cached.text);
+        return cached;
+      }
+    } catch {
+      // Bad cache files are ignored and rebuilt.
+    }
+  }
+
+  const extracted = await extractFreshBook(filePath);
+  const cached: CachedBook = {
+    sourcePath: filePath,
+    sourceSize: stats.size,
+    sourceModified: Math.floor(stats.mtimeMs),
+    title: extracted.title ?? titleFromFile(filePath),
+    author: extracted.author,
+    text: cleanText(extracted.text),
+    warning: extracted.warning,
+  };
+  writeFileSync(cachePath, JSON.stringify(cached, null, 2), "utf8");
+  return cached;
+}
+
+async function extractFreshBook(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string }> {
   const extension = extname(filePath).toLowerCase();
   if (extension === ".txt" || extension === ".md") {
-    return { text: cleanText(await readFile(filePath, "utf8")) };
+    return { text: cleanText(await readFile(filePath, "utf8")), title: titleFromFile(filePath) };
   }
 
   if (extension === ".pdf") {
-    const tool = process.env.PDFTOTEXT_BIN ?? "pdftotext";
+    const tool = pdfToTextBin;
     const check = spawnSync(tool, ["-v"], { windowsHide: true });
     if (check.error) {
       return {
@@ -156,7 +213,56 @@ async function extractText(filePath: string): Promise<{ text: string; warning?: 
     }
   }
 
+  if (extension === ".epub") {
+    try {
+      return await runEpubExtractor(filePath);
+    } catch (error) {
+      return {
+        text: "",
+        title: titleFromFile(filePath),
+        warning: `EPUB extraction failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  }
+
   return { text: "", warning: `Unsupported file type: ${extension}` };
+}
+
+function runEpubExtractor(filePath: string): Promise<{ text: string; warning?: string; title?: string; author?: string }> {
+  return new Promise((resolvePromise, reject) => {
+    const helperPath = join(scriptsDir, "extract_epub.py");
+    const child = spawn(piperPython, [helperPath, filePath], { windowsHide: true });
+    const stdout: Buffer[] = [];
+    let stderr = "";
+
+    child.stdout.on("data", (data) => stdout.push(Buffer.from(data)));
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error((stderr || `EPUB extractor exited with code ${code}`).trim()));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(Buffer.concat(stdout).toString("utf8")) as {
+          title?: string;
+          author?: string;
+          text?: string;
+          warning?: string;
+        };
+        resolvePromise({
+          title: parsed.title,
+          author: parsed.author,
+          text: cleanText(parsed.text ?? ""),
+          warning: parsed.warning,
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
 }
 
 function runPdfToText(tool: string, filePath: string): Promise<string> {
@@ -179,8 +285,11 @@ function runPdfToText(tool: string, filePath: string): Promise<string> {
 
 function cleanText(text: string): string {
   return text
+    .replace(/[\uD800-\uDFFF]/g, "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
+    .replace(/\f/g, "\n\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .replace(/-\n(?=\w)/g, "")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
@@ -209,15 +318,15 @@ function listVoices() {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function startTtsJob(bookId: string, offset: number, voice: string): Promise<Job> {
+async function startTtsJob(bookId: string, offset: number, voice: string, speed: number): Promise<Job> {
   const job: Job = { id: randomUUID().slice(0, 12), status: "queued", message: "Queued" };
   jobs.set(job.id, job);
 
-  void runTtsJob(job.id, bookId, offset, voice);
+  void runTtsJob(job.id, bookId, offset, voice, speed);
   return job;
 }
 
-async function runTtsJob(jobId: string, bookId: string, offset: number, voice: string) {
+async function runTtsJob(jobId: string, bookId: string, offset: number, voice: string, speed: number) {
   const job = jobs.get(jobId);
   if (!job) return;
 
@@ -229,15 +338,16 @@ async function runTtsJob(jobId: string, bookId: string, offset: number, voice: s
     const { text, warning } = await extractText(filePath);
     if (!text) throw new Error(warning ?? "There is no readable text in this book.");
 
-    const chunk = textSlice(text, offset, maxCharsPerJob);
+    const chunk = textSlice(cleanText(text), offset, maxCharsPerJob);
     if (!chunk.text) throw new Error("There is no text to synthesize at this position.");
 
     const outputName = `${safeName(bookId)}-${jobId}.wav`;
     const outputPath = join(generatedDir, outputName);
     const voiceName = voice || defaultVoice;
+    const safeSpeed = clamp(Number.isFinite(speed) ? speed : 1, 0.65, 1.6);
 
-    job.message = "Piper is generating audio...";
-    await runPiper(chunk.text, voiceName, outputPath);
+    job.message = `Piper is generating audio at ${safeSpeed.toFixed(2)}x...`;
+    await runPiper(cleanText(chunk.text), voiceName, outputPath, safeSpeed);
 
     setProgress(bookId, chunk.nextOffset);
     job.status = "done";
@@ -251,11 +361,12 @@ async function runTtsJob(jobId: string, bookId: string, offset: number, voice: s
   }
 }
 
-function runPiper(text: string, voice: string, outputPath: string): Promise<void> {
+function runPiper(text: string, voice: string, outputPath: string, speed: number): Promise<void> {
   return new Promise((resolvePromise, reject) => {
+    const lengthScale = clamp(1 / speed, 0.6, 1.55).toFixed(3);
     const child = spawn(
       piperPython,
-      ["-m", "piper", "--data-dir", voicesDir, "-m", voice, "-f", outputPath],
+      ["-m", "piper", "--data-dir", voicesDir, "-m", voice, "-f", outputPath, "--length-scale", lengthScale],
       { windowsHide: true }
     );
 
@@ -274,6 +385,10 @@ function runPiper(text: string, voice: string, outputPath: string): Promise<void
     });
     child.stdin.end(text);
   });
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
 }
 
 function safeName(input: string): string {
@@ -391,7 +506,8 @@ const server = createServer(async (req, res) => {
       const job = await startTtsJob(
         decodeURIComponent(listenMatch[1]),
         Number(payload.offset ?? 0),
-        String(payload.voice ?? defaultVoice)
+        String(payload.voice ?? defaultVoice),
+        Number(payload.speed ?? 1)
       );
       sendJson(res, { jobId: job.id });
       return;
