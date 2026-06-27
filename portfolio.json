@@ -1,4 +1,5 @@
 {
 add_to_portfolio:true,
-title: Local AI for convesing about subjects.
+title: "Local AI model for listening file based books",
+description: "A small TypeScript web app for listening local .pdf/.txt/.epub books with Piper"
 }
